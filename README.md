@@ -1,1 +1,1 @@
-# Han-Zhang
+# This repository includes some source codes from the financial time-series modeling project written in R; and a function written in python for finding the flow with demand with a Ford-Fulkerson function which finds a maximum flow implemented by myself.
