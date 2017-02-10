@@ -1,0 +1,190 @@
+---
+title: "Project - Neural Network model on 1-min High Frequency Data"
+author: "Han Zhang" 
+date: "Nov 30, 2016"
+output: html_document
+---
+
+```{r, eval=TRUE, include=FALSE}
+library(quantmod)
+library(lattice)
+library(timeSeries)
+library(rugarch)
+library(MASS)
+library(neuralnet)
+library(ppcor)
+library("xts")
+library("nloptr")
+library(zoo)
+
+```
+
+
+```{r}
+data <- read.csv("C:/Users/zhang/Desktop/STAT GU4263/project/dataHW5csv.csv")  # read csv file 
+prices1min <- t(data[,3:393])
+
+data_df <- data.frame(data[,2:393])
+row.names(data_df) <- data[,1]
+data_df <- data_df[complete.cases(data_df),]
+data_df <- xts(data_df,order.by = as.Date(row.names(data_df),format = '%m/%d/%Y'))
+
+
+returns1min <- 100*diff(log(t(data_df[,2:392])))
+returns1min <- t(returns1min)
+returns1min <- xts(returns1min,order.by = as.Date(index(data_df)),format = '%m/%d/%Y')
+returns1min <- returns1min[complete.cases(returns1min),]
+```
+
+```{r}
+nnAR3 <- function(data1,p,q,weights)
+{
+  T1 <- length(data1)
+  maxs <- max(data1) 
+  mins <- min(data1)
+  scaled <- as.data.frame(scale(data1, center = mins, scale = maxs - mins))
+  #scaled <- as.data.frame(data1)
+  
+  Y <- scaled[4:T1,1]
+  X <- c(scaled[3:(T1-1),1],scaled[2:(T1-2),1],scaled[1:(T1-3),1])
+  X <- matrix(X,length(X)/3,3)
+  
+  
+  f  <- as.formula("Y ~ X[,1] + X[,2] + X[,3]")
+  if (q>0){
+    nn1 <- neuralnet(f,data=scaled,hidden=c(p,q),linear.output=T,startweights=weights)  
+  }else #q=0 corresponds to a NN with one hidden layer and p neurons
+  {
+    nn1 <- neuralnet(f,data=scaled,hidden=p,linear.output=T,startweights=weights)  
+  }
+  XT1 <- t(c(scaled[T1,1],scaled[(T1-1),1],scaled[(T1-2),1]))
+  pr.nn   <- compute(nn1,XT1)
+  pr.nn_  <- pr.nn$net.result*( maxs - mins ) + mins
+  nn1$pr  <- pr.nn
+  nn1$pr_ <- pr.nn_
+  
+  return(nn1)
+}
+```
+
+
+```{r}
+windowLength <- 240
+nmins <-dim(returns1min)[2]
+nDays <- dim(returns1min)[1]
+
+foreLength <- nmins - windowLength
+forecasts <- matrix(NA,foreLength+1,nDays)
+
+
+r <- matrix(NA,foreLength+1,nDays)  
+P=3;Q=3;
+nnAll=matrix(list(),P,Q+1)
+pr1=matrix(list(),P,Q+1)
+pr2=matrix(list(),P,Q+1)
+pr3=matrix(list(),P,Q+1)
+pr4=matrix(list(),P,Q+1)
+pr5=matrix(list(),P,Q+1)
+pr6=matrix(list(),P,Q+1)
+pr7=matrix(list(),P,Q+1)
+pr8=matrix(list(),P,Q+1)
+pr9=matrix(list(),P,Q+1)
+pr10=matrix(list(),P,Q+1)
+d=0
+m=0
+#returns1min = nDays x nmins
+```
+
+```{r, eval=FALSE, include=TRUE}
+nn=-1111
+for (d in 0:(nDays-1)){
+  for (m in 0:(foreLength -1)) {
+    
+    #2. Obtain the S&P500 rolling window for this day
+    ReturnsOffset = t(as.numeric(returns1min[d+1,(1+m):(windowLength+m)]))
+    T    <- length(ReturnsOffset)
+    FMSE <- matrix(NA,P,Q+1)
+    for (p in 1:P) for (q in 0:Q) {
+      if (m==0){
+        pr10[[p,q+1]]  <-  tryCatch(nnAR3(ReturnsOffset[1:(T-10)],p,q,nnAll[[p,q+1]]$weights), error=function(e) e, warning=function(w) w)
+        if(is(nn, "warning") || is(nn,"error") ) {pr10[[p,q+1]]<- nnAR3(ReturnsOffset[1:(T-10)],p,q,NULL)}
+        pr9[[p,q+1]]  <-  tryCatch(nnAR3(ReturnsOffset[1:(T-9)],p,q,nnAll[[p,q+1]]$weights), error=function(e) e, warning=function(w) w)
+        if(is(nn, "warning") || is(nn,"error") ) {pr9[[p,q+1]]<- nnAR3(ReturnsOffset[1:(T-9)],p,q,NULL)}
+        pr8[[p,q+1]]  <-  tryCatch(nnAR3(ReturnsOffset[1:(T-8)],p,q,nnAll[[p,q+1]]$weights), error=function(e) e, warning=function(w) w)
+        if(is(nn, "warning") || is(nn,"error") ) {pr8[[p,q+1]]<- nnAR3(ReturnsOffset[1:(T-8)],p,q,NULL)}
+        pr7[[p,q+1]]  <-  tryCatch(nnAR3(ReturnsOffset[1:(T-7)],p,q,nnAll[[p,q+1]]$weights), error=function(e) e, warning=function(w) w)
+        if(is(nn, "warning") || is(nn,"error") ) {pr7[[p,q+1]]<- nnAR3(ReturnsOffset[1:(T-7)],p,q,NULL)}
+        pr6[[p,q+1]]  <-  tryCatch(nnAR3(ReturnsOffset[1:(T-6)],p,q,nnAll[[p,q+1]]$weights), error=function(e) e, warning=function(w) w)
+        if(is(nn, "warning") || is(nn,"error") ) {pr6[[p,q+1]]<- nnAR3(ReturnsOffset[1:(T-6)],p,q,NULL)}
+        pr5[[p,q+1]]  <-  tryCatch(nnAR3(ReturnsOffset[1:(T-5)],p,q,nnAll[[p,q+1]]$weights), error=function(e) e, warning=function(w) w)
+        if(is(nn, "warning") || is(nn,"error") ) {pr5[[p,q+1]]<- nnAR3(ReturnsOffset[1:(T-5)],p,q,NULL)}
+        pr4[[p,q+1]]  <-  tryCatch(nnAR3(ReturnsOffset[1:(T-4)],p,q,nnAll[[p,q+1]]$weights), error=function(e) e, warning=function(w) w)
+        if(is(nn, "warning") || is(nn,"error") ) {pr4[[p,q+1]]<- nnAR3(ReturnsOffset[1:(T-4)],p,q,NULL)}
+        pr3[[p,q+1]]  <-  tryCatch(nnAR3(ReturnsOffset[1:(T-3)],p,q,nnAll[[p,q+1]]$weights), error=function(e) e, warning=function(w) w)
+        if(is(nn, "warning") || is(nn,"error") ) {pr3[[p,q+1]]<- nnAR3(ReturnsOffset[1:(T-3)],p,q,NULL)}
+        pr2[[p,q+1]]  <-  tryCatch(nnAR3(ReturnsOffset[1:(T-2)],p,q,nnAll[[p,q+1]]$weights), error=function(e) e, warning=function(w) w)
+        if(is(nn, "warning") || is(nn,"error") ) {pr2[[p,q+1]]<- nnAR3(ReturnsOffset[1:(T-2)],p,q,NULL)}
+        pr1[[p,q+1]]  <-  tryCatch(nnAR3(ReturnsOffset[1:(T-1)],p,q,nnAll[[p,q+1]]$weights), error=function(e) e, warning=function(w) w)
+        if(is(nn, "warning") || is(nn,"error") ) {pr1[[p,q+1]]<- nnAR3(ReturnsOffset[1:(T-1)],p,q,NULL)}
+      }
+      else if(m>=1)
+      {
+        pr10[[p,q+1]]<- pr9[[p,q+1]]
+        pr9[[p,q+1]]<- pr8[[p,q+1]]
+        pr8[[p,q+1]]<- pr7[[p,q+1]]
+        pr7[[p,q+1]]<- pr6[[p,q+1]]
+        pr6[[p,q+1]]<- pr5[[p,q+1]]
+        pr5[[p,q+1]]<- pr4[[p,q+1]]
+        pr4[[p,q+1]]<- pr3[[p,q+1]]
+        pr3[[p,q+1]]<- pr2[[p,q+1]]
+        pr2[[p,q+1]]<- pr1[[p,q+1]]
+        pr1[[p,q+1]]<- nnAll[[p,q+1]]
+      }
+      FMSE[p,q+1] <- (as.numeric(ReturnsOffset[T]) - as.numeric(pr1[[p,q+1]]$pr_))^2 +
+        (as.numeric(ReturnsOffset[(T-1)]) - as.numeric(pr2[[p,q+1]]$pr_))^2 +
+        (as.numeric(ReturnsOffset[(T-2)]) - as.numeric(pr3[[p,q+1]]$pr_))^2 +
+        (as.numeric(ReturnsOffset[(T-3)]) - as.numeric(pr4[[p,q+1]]$pr_))^2 +
+        (as.numeric(ReturnsOffset[(T-4)]) - as.numeric(pr5[[p,q+1]]$pr_))^2 +
+        (as.numeric(ReturnsOffset[(T-5)]) - as.numeric(pr6[[p,q+1]]$pr_))^2 +
+        (as.numeric(ReturnsOffset[(T-6)]) - as.numeric(pr7[[p,q+1]]$pr_))^2 +
+        (as.numeric(ReturnsOffset[(T-7)]) - as.numeric(pr8[[p,q+1]]$pr_))^2 +
+        (as.numeric(ReturnsOffset[(T-8)]) - as.numeric(pr9[[p,q+1]]$pr_))^2 +
+        (as.numeric(ReturnsOffset[(T-9)]) - as.numeric(pr10[[p,q+1]]$pr_))^2 
+      
+      #run all the cases on full data, to store the starting values for the next rolling window
+      nn  <- tryCatch(nnAR3(ReturnsOffset[1:T],p,q,nnAll[[p,q+1]]$weights), error=function(e) e, warning=function(w) w)
+      if(is(nn, "warning") || is(nn,"error") ) {nn<- nnAR3(ReturnsOffset[1:T],p,q,NULL)}
+      nnAll[[p,q+1]]=nn
+    }
+    
+    
+    p1     <- which(FMSE == min(FMSE), arr.ind = TRUE)[1]
+    q1     <- which(FMSE == min(FMSE), arr.ind = TRUE)[2]
+    nnOpt  <- nnAll[[p1,q1]]
+    pr     <- nnOpt$pr_
+    ind    <- index(returns1min[d+1,windowLength+m+1])
+    forecasts[m+1,d+1] <- ifelse(pr < 0, -1, 1) #forecast signals 
+    
+    r[m+1,d+1] = returns1min[d+1,windowLength+m+1]*ifelse(pr < 0, -1, 1) #matrix store return using the model
+    
+    # the data has 1 minute frequency and is traded for 6.5 hours per day.
+    SR  = round(100*sqrt(252*60*6.5)*mean(na.exclude(r[1:(m+1),d+1]))/sqrt(max(0.0000001,var(na.exclude(r[1:(m+1),d+1])))))/100
+    SRm = round(100*sqrt(252*60*6.5)*mean(na.exclude(returns1min[d+1,(windowLength+1):(windowLength+m+1)]))
+                /sqrt(max(0.0000001,var(t(na.exclude(returns1min[d+1,(windowLength+1):(windowLength+m+1)]))))))/100
+    
+    print(paste(paste('Date: ',ind,sep=''),
+                paste(' SR = ',SR,sep =''),
+                paste(' SRm = ',SRm, sep=''),
+                paste(' Signal = ',ifelse(pr < 0, -1, 1),sep=''),
+                paste(' NN: (',p1,',',q1-1,')',sep=''),
+                paste(' mins Progress = ',paste(round(10000*m/(foreLength-1))/100,'%',sep=''),sep=''),
+                paste(' days Progress = ',paste(round(10000*d/(nDays))/100,'%',sep=''),sep=''),
+                sep=";")) 
+  }
+}
+
+forecasts<-t(forecasts) #d rows and m columns
+r<-t(r) #d rous and m columns
+write.csv(forecasts, file="forecasts_NN_HFdata.csv", row.names=FALSE)
+write.csv(r, file="r_NN_HFdata.csv", row.names=FALSE)
+```

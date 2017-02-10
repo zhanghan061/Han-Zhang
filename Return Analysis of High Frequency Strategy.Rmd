@@ -1,0 +1,421 @@
+---
+title: "Return Analysis of High Frequency Strategy"
+author: "Han Zhang"
+date: "Dec 1, 2016"
+output: html_document
+---
+```{r, eval=TRUE, include=FALSE}
+library("xts") #for time series
+library("nloptr") #for optimization
+library(zoo)
+library("dygraphs") #for plots
+library("magrittr") # pipes
+library(dplyr)
+#library(streamgraph)
+library(viridis)
+
+library(quantmod)
+library(lattice)
+library(timeSeries)
+library(rugarch)
+library(neuralnet)
+```
+
+```{r}
+r_NN<-read.csv(file="C:/Users/zhang/Desktop/STAT GU4263/r_NN_HFdata.csv", header=T, sep=",",dec = ".")
+r_LS<-read.csv(file="C:/Users/zhang/Desktop/STAT GU4263/project/r_LS_HFdata.csv", header=T, sep=",",dec = ".")
+r_AG<-read.csv(file="C:/Users/zhang/Desktop/STAT GU4263/project/r_AG_HFdata.csv", header=T, sep=",",dec = ".")
+
+```
+
+```{r, eval=TRUE, include=FALSE}
+r_NN<-t(r_NN)
+r_LS<-t(r_LS)
+r_AG<-t(r_AG)
+```
+
+
+
+#compute cumulative log return of every day and store it at last column (which is all NA before)
+```{r}
+for (i in 1:dim(r_NN)[1]){
+  r_NN[i,151]<-sum(r_NN[i,(1:150)])
+  r_AG[i,151]<-sum(r_AG[i,(1:150)])
+  r_LS[i,151]<-sum(r_LS[i,(1:150)])
+}
+```
+
+#compute gross cumulative returns
+```{r}
+r_sum_NN<-r_NN[,151]
+r_sum_AG<-r_AG[,151]
+r_sum_LS<-r_LS[,151]
+
+data <- read.csv("C:/Users/zhang/Desktop/STAT GU4263/project/dataHW5csv.csv")  # read csv file 
+prices1min <- t(data[,3:393])
+
+data_df <- data.frame(data[,2:393])
+row.names(data_df) <- data[,1]
+data_df <- data_df[complete.cases(data_df),]
+data_df <- xts(data_df,order.by = as.Date(row.names(data_df),format = '%m/%d/%Y'))
+
+
+returns1min <- 100*diff(log(t(data_df[,2:392])))
+returns1min <- t(returns1min)
+returns1min <- xts(returns1min,order.by = as.Date(index(data_df)),format = '%m/%d/%Y')
+returns1min <- returns1min[complete.cases(returns1min),]
+
+returns1min<-returns1min[,241:390] #question:buy and hold start at the beginning of the day?
+r_sum_buyhold<-rep(NA,650)
+for (i in 1:650){
+r_sum_buyhold[i]<-sum(returns1min[i,])
+}
+
+gross_LS<-rep(NA,650)
+gross_AG<-rep(NA,650)
+gross_buyhold<-rep(NA,650)
+gross_NN<-rep(NA,650)
+
+for (i in 1:650){
+  gross_LS[i]<-exp(sum(r_sum_LS[1:i])/100)
+  gross_NN[i]<-exp(sum(r_sum_NN[1:i])/100)
+  gross_AG[i]<-exp(sum(r_sum_AG[1:i])/100)
+  gross_buyhold[i]<-exp(sum(r_sum_buyhold[1:i])/100)
+}
+
+
+gross_LS<-xts(gross_LS,order.by=index(returns1min))
+gross_NN<-xts(gross_NN,order.by=index(returns1min))
+gross_AG<-xts(gross_AG,order.by=index(returns1min))
+
+gross<-merge(gross_LS,gross_NN,gross_AG,gross_buyhold)
+colnames(gross)<-c("Loess Method","Neural Network","Arma-Garch","Buy&Hold")
+```
+
+#Plot gross cumulative returns of each strategy and buy and hold 
+```{r}
+dygraph(gross,ylab="million dollars")
+```
+
+
+#Compute Sharpe Ratios 
+```{r}
+SR_NN<-sqrt(252)*mean(r_sum_NN)/sd(r_sum_NN)
+SR_LS<-sqrt(252)*mean(r_sum_LS)/sqrt(var(r_sum_LS))
+SR_buyhold<-sqrt(252)*mean(r_sum_buyhold)/sqrt(var(r_sum_buyhold))
+SR_AG<-sqrt(252)*mean(r_sum_AG)/sqrt(var(r_sum_AG))
+
+```
+
+#Annualized Sharpe Ratios of Arma-Garch Model for 
+```{r}
+SR_AG
+```
+
+#Annualized Sharpe Ratios of Neural Network Model 
+```{r}
+SR_NN
+```
+
+#Annualized Sharpe Ratios of Loess Model
+```{r}
+SR_LS
+```
+
+#Annualized Sharpe Ratios of Buy and Hold 
+```{r}
+SR_buyhold
+```
+
+
+<br>
+
+
+```{r}
+
+fore_NN<-read.csv(file="C:/Users/zhang/Desktop/STAT GU4263/forecasts_NN_HFdata.csv", header=T, sep=",",dec = ".")
+fore_LS<-read.csv(file="C:/Users/zhang/Desktop/STAT GU4263/project/forecasts_LS_HFdata.csv", header=T, sep=",",dec = ".")
+fore_AG<-read.csv(file="C:/Users/zhang/Desktop/STAT GU4263/project/forecasts_AG_HFdata.csv", header=T, sep=",",dec = ".")
+```
+
+```{r, eval=TRUE, include=FALSE}
+fore_NN<-t(fore_NN)
+fore_LS<-t(fore_LS)
+fore_AG<-t(fore_AG)
+```
+
+```{r}
+accumulated_wealth<-matrix(nrow=650,ncol=150)
+cumulative_previous<-1000000
+number<-0
+for(d in 1:650){
+  transaction_cost<-as.numeric(data_df[index(gross_AG[d,]),1])
+  
+  for (m in 1:149){
+    accumulated_wealth_temp<-cumulative_previous*exp(r_AG[d,m]/100)
+    if(fore_AG[d,m]!=fore_AG[d,(m+1)]){
+      number=number+1
+      accumulated_wealth_temp<-accumulated_wealth_temp*(1-transaction_cost)
+    }
+    accumulated_wealth[d,m]<-accumulated_wealth_temp
+    cumulative_previous<-accumulated_wealth_temp
+  }
+  accumulated_wealth[d,150]<-(accumulated_wealth[d,149])*(exp(r_AG[d,150]/100))*(1-transaction_cost)
+  cumulative_previous<-accumulated_wealth[d,150]
+}
+
+
+accumulated_wealth_NN<-matrix(nrow=650,ncol=150)
+cumulative_previous<-1000000
+number<-0
+for(d in 1:650){
+  transaction_cost<-as.numeric(data_df[index(gross_NN[d,]),1])
+  
+  for (m in 1:149){
+    accumulated_wealth_temp<-cumulative_previous*exp(r_NN[d,m]/100)
+    if(fore_NN[d,m]!=fore_NN[d,(m+1)]){
+      number=number+1
+      accumulated_wealth_temp<-accumulated_wealth_temp*(1-transaction_cost)
+    }
+    accumulated_wealth_NN[d,m]<-accumulated_wealth_temp
+    cumulative_previous<-accumulated_wealth_temp
+  }
+  accumulated_wealth_NN[d,150]<-(accumulated_wealth_NN[d,149])*(exp(r_NN[d,150]/100))*(1-transaction_cost)
+  cumulative_previous<-accumulated_wealth_NN[d,150]
+}
+
+accumulated_wealth_LS<-matrix(nrow=650,ncol=150)
+cumulative_previous<-1000000
+number<-0
+for(d in 1:650){
+  transaction_cost<-as.numeric(data_df[index(gross_LS[d,]),1])
+  
+  for (m in 1:149){
+    accumulated_wealth_temp<-cumulative_previous*exp(r_LS[d,m]/100)
+    if(fore_LS[d,m]!=fore_LS[d,(m+1)]){
+      number=number+1
+      accumulated_wealth_temp<-accumulated_wealth_temp*(1-transaction_cost)
+    }
+    accumulated_wealth_LS[d,m]<-accumulated_wealth_temp
+    cumulative_previous<-accumulated_wealth_temp
+  }
+  accumulated_wealth_LS[d,150]<-(accumulated_wealth_LS[d,149])*(exp(r_LS[d,150]/100))*(1-transaction_cost)
+  cumulative_previous<-accumulated_wealth_LS[d,150]
+}
+
+accumulated_wealth_buyhold<-matrix(nrow=650,ncol=150)
+cumulative_previous<-1000000
+for(d in 1:650){
+  transaction_cost<-as.numeric(data_df[index(gross_LS[d,]),1])
+  
+  for (m in 1:149){
+    accumulated_wealth_temp<-cumulative_previous*exp(returns1min[d,m]/100)
+    
+    accumulated_wealth_buyhold[d,m]<-accumulated_wealth_temp
+    cumulative_previous<-accumulated_wealth_temp
+  }
+  accumulated_wealth_buyhold[d,150]<-(accumulated_wealth_buyhold[d,149])*(exp(returns1min[d,150]/100))*(1-transaction_cost)
+  cumulative_previous<-accumulated_wealth_buyhold[d,150]
+}
+#compute net cumulative returns of each strategy
+accumulated_AG<-(accumulated_wealth[,150]-1000000)/1000000
+accumulated_AG<-xts(accumulated_AG,order.by=index(returns1min))
+accumulated_NN<-xts((accumulated_wealth_NN[,150]-1000000)/1000000,order.by=index(returns1min))
+accumulated_LS<-xts((accumulated_wealth_LS[,150]-1000000)/1000000,order.by=index(returns1min))
+accumulated_buyhold<-xts((accumulated_wealth_buyhold[,150]-1000000)/1000000,order.by=index(returns1min))
+
+accumulated<-merge(accumulated_AG,accumulated_NN,accumulated_buyhold,accumulated_LS)
+colnames(accumulated)<-c("Arma_Garch","Neural Network","Buy&Hold","Loess Method")
+```
+
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+
+#Plot the net cumulative returns of each strategy and buy and hold
+```{r}
+dygraph(accumulated)
+```
+
+
+
+```{r}
+logreturn_AG_c<-log(accumulated_AG+1)
+logreturn_NN_c<-log(accumulated_NN+1)
+logreturn_LS_c<-log(accumulated_LS+1)
+logreturn_buyhold_c<-log(accumulated_buyhold+1)
+logreturn_AG<-as.numeric(logreturn_AG_c[1])
+logreturn_NN<-as.numeric(logreturn_NN_c[1])
+logreturn_LS<-as.numeric(logreturn_LS_c[1])
+logreturn_buyhold<-as.numeric(logreturn_buyhold_c[1])
+for (i in 2:650){
+  logreturn_AG_temp<-as.numeric(logreturn_AG_c[i])-as.numeric(logreturn_AG_c[i-1])
+  logreturn_NN_temp<-as.numeric(logreturn_NN_c[i])-as.numeric(logreturn_NN_c[i-1])
+  logreturn_LS_temp<-as.numeric(logreturn_LS_c[i])-as.numeric(logreturn_LS_c[i-1])
+  logreturn_buyhold_temp<-as.numeric(logreturn_buyhold_c[i])-as.numeric(logreturn_buyhold_c[i-1])
+  logreturn_AG<-rbind(logreturn_AG,logreturn_AG_temp)
+  logreturn_NN<-rbind(logreturn_NN,logreturn_NN_temp)
+  logreturn_LS<-rbind(logreturn_LS,logreturn_LS_temp)
+  logreturn_buyhold<-rbind(logreturn_buyhold,logreturn_buyhold_temp)
+}
+```
+  
+#Compute Sharpe ratios 
+```{r}
+SR_AG_1<-sqrt(252)*mean(logreturn_AG)/(sd(logreturn_AG))
+SR_NN_1<-sqrt(252)*mean(logreturn_NN)/(sd(logreturn_NN))
+SR_LS_1<-sqrt(252)*mean(logreturn_LS)/(sd(logreturn_LS))
+SR_buyhold_1<-sqrt(252)*mean(logreturn_buyhold)/(sd(logreturn_buyhold))
+```  
+  
+  
+#Annualized Sharpe Ratios of Arma-Garch Model 
+```{r}
+SR_AG_1
+```
+
+#Annualized Sharpe Ratios of Neural Network Model for 
+```{r}
+SR_NN_1
+```
+
+#Annualized Sharpe Ratios of Loess Model for 
+```{r}
+SR_LS_1
+```
+
+#Annualized Sharpe Ratios of Buy and Hold for 
+```{r}
+SR_buyhold_1
+```
+
+<br>
+
+
+```{r}
+net_pl_AG<-rep(NA,650)
+net_pl_NN<-rep(NA,650)
+net_pl_buyhold<-rep(NA,650)
+net_pl_LS<-rep(NA,650)
+for (i in 1:650){
+  net_pl_AG[i]<-(accumulated_wealth[i,150]-accumulated_wealth[i,1])
+  net_pl_NN[i]<-(accumulated_wealth_NN[i,150]-accumulated_wealth_NN[i,1])
+  net_pl_buyhold<-(accumulated_wealth_buyhold[i,150]-accumulated_wealth_buyhold[i,1])
+  net_pl_LS[i]<-(accumulated_wealth_LS[i,150]-accumulated_wealth_LS[i,1])
+  
+}
+```
+
+
+```{r, eval=TRUE, include=FALSE}
+setwd('C:/Users/zhang/Desktop/STAT GU4263')
+
+
+price_data <- read.csv("C:/Users/zhang/Desktop/STAT GU4263/data/data/dataHW5csv.csv",sep=",")
+
+
+first_day<-t(price_data[1,(3:dim(price_data)[2])])
+log_return <- 100*(diff(log(first_day)))
+
+for (k in 2:dim(price_data)[1])
+{
+  day_price<-t(price_data[k,(3:dim(price_data)[2])])
+  log_return_day<-100*(diff(log(day_price)))
+
+  log_return<-cbind(log_return,log_return_day)
+}
+
+colnames(log_return)<-price_data[,1]
+
+
+log_returns<-price_data
+for( i in 1:dim(price_data)[1]){
+  log_returns[i,3]<-NA
+  log_returns[i,4:(dim(price_data)[2])]<-t(log_return[,i])
+}
+
+
+pacf_all<-pacf(log_return[,1],lag.max=10,na.action=na.pass,plot=FALSE)$acf
+
+for (i in 2:dim(log_return)[2]){
+  pacf_day<-pacf(log_return[,i],lag.max=10,na.action=na.pass,plot=FALSE)$acf
+  pacf_all<-cbind(pacf_all,pacf_day)
+}
+
+colnames(pacf_all)<-price_data[,1]
+pacf_all<-t(pacf_all)
+
+
+open_price<-as.data.frame(price_data[,3])
+close_price<-as.data.frame(price_data[,dim(price_data)[2]])
+low_price<-min(price_data[1,(3:dim(price_data)[2])])
+high_price<-max(price_data[1,(3:dim(price_data)[2])])
+
+for (i in 2:dim(price_data)[1]){
+  low_price_day<-min(price_data[i,(3:dim(price_data)[2])])
+  high_price_day<-max(price_data[i,(3:dim(price_data)[2])])
+  low_price<-rbind(low_price,low_price_day)
+  high_price<-rbind(high_price,high_price_day)
+}
+
+rownames(open_price)<-price_data[,1]
+rownames(low_price)<-price_data[,1]
+rownames(high_price)<-price_data[,1]
+rownames(close_price)<-price_data[,1]
+
+D<-as.Date.factor(price_data[,1],"%m/%d/%Y")
+sigma<-as.data.frame(rep(NA,dim(price_data)[1]))
+for (i in 2:dim(price_data)[1]){
+  if(!is.nan(open_price[i,]) &  !is.nan(close_price[(i-1),])){
+    if(open_price[i,]!=0  &close_price[(i-1),]!=0){
+  sigma_tiuda<-0.5*((high_price[i,]-low_price[i,])^2)-(2*log(2)-1)*((close_price[i,]-open_price[i,])^2)
+  sigma[i,]<-(0.12/0.66)*((open_price[i,]-close_price[(i-1),])^2)+(0.88*sigma_tiuda)/(1-0.66)
+  }
+  }
+}
+volatility<-sqrt(sigma)
+volatility_xts <- xts(volatility,order.by = D)
+volatility_xts<-lag(volatility_xts)
+```
+
+
+#Plot net profits & losses of ARMA-GARCH model against previous day volatility estimates
+```{r}
+net_pl_AG<-xts(net_pl_AG,order.by=index(returns1min))
+plot_AG<-merge(volatility_xts,net_pl_AG)
+plot_AG <- plot_AG[complete.cases(plot_AG),]
+colnames(plot_AG)<-c("volatility","net profits&losses of Arma-Garch")
+scatter.smooth(plot_AG)
+```
+
+#Plot net profits & losses of Neural Network model against previous day volatility estimates
+```{r}
+net_pl_NN<-xts(net_pl_NN,order.by=index(returns1min))
+plot_NN<-merge(volatility_xts,net_pl_NN)
+plot_NN <- plot_NN[complete.cases(plot_NN),]
+colnames(plot_NN)<-c("volatility","net profits & losses of Neural Network")
+scatter.smooth(plot_NN)
+```
+
+##Plot net profits & losses of Loess Method against previous day volatility estimates
+```{r}
+net_pl_LS<-xts(net_pl_LS,order.by=index(returns1min))
+plot_LS<-merge(volatility_xts,net_pl_LS)
+plot_LS <- plot_LS[complete.cases(plot_LS),]
+colnames(plot_LS)<-c("volatility","net profits& losses of Loess Method")
+scatter.smooth(plot_LS)
+```

@@ -1,0 +1,256 @@
+---
+title: "Project - Local Linear Regression model on 1-min High Frequency Data"
+author: "Han Zhang" 
+date: "Nov 30, 2016"
+output: html_document
+---
+
+```{r, eval=TRUE, include=FALSE}
+library("xts") #for time series
+library("nloptr") #for optimization
+library(zoo)
+library("dygraphs") #for plots
+library("magrittr") # pipes
+library(dplyr)
+#library(streamgraph)
+#library(viridis)
+
+library(quantmod)
+library(lattice)
+library(timeSeries)
+library(rugarch)
+
+```
+
+
+```{r}
+data <- read.csv("C:/Users/zhang/Desktop/STAT GU4263/project/dataHW5csv.csv")  # read csv file 
+prices1min <- t(data[,3:393])
+
+data_df <- data.frame(data[,2:393])
+row.names(data_df) <- data[,1]
+data_df <- data_df[complete.cases(data_df),]
+data_df <- xts(data_df,order.by = as.Date(row.names(data_df),format = '%m/%d/%Y'))
+
+
+returns1min <- 100*diff(log(t(data_df[,2:392])))
+returns1min <- t(returns1min)
+returns1min <- xts(returns1min,order.by = as.Date(index(data_df)),format = '%m/%d/%Y')
+returns1min <- returns1min[complete.cases(returns1min),]
+```
+
+
+
+
+```{r}
+windowLength <- 240
+nmins <-dim(returns1min)[2]
+nDays <- dim(returns1min)[1]
+
+foreLength <- nmins - windowLength
+forecasts <- matrix(NA,foreLength+1,nDays)
+
+model_return <- matrix(NA,foreLength+1,nDays)  
+
+spanlist<-c(seq(from=0.1,to=2,by=0.1))
+
+LsAll=matrix(list(),1,length(spanlist))
+pr1=matrix(list(),1,length(spanlist))
+pr2=matrix(list(),1,length(spanlist))
+pr3=matrix(list(),1,length(spanlist))
+
+d=0
+m=0
+#returns1min = nDays x nmins
+```
+
+```{r, eval=FALSE, include=TRUE}
+
+for (d in 0:nDays){
+  for (m in 0:(foreLength -1)) {
+    
+    #2. Obtain the S&P500 rolling window for this day
+    ReturnsOffset = t(returns1min[d+1,(1+m):(windowLength+m)])
+    T    <- length(ReturnsOffset)
+    FMSE <- matrix(NA,1,length(spanlist))
+    
+    r1<-as.vector(ReturnsOffset[3:236])#vector hold values of rt-1
+    r2<-as.vector(ReturnsOffset[2:235])
+    r3<-as.vector(ReturnsOffset[1:234])
+    r<-as.vector(ReturnsOffset[4:237])
+    data_r<-as.data.frame(cbind(r1,r2,r3,r))#data for fit
+
+   r111<-as.vector(ReturnsOffset[3:239])#vector hold values of rt-1
+   r222<-as.vector(ReturnsOffset[2:238])
+   r333<-as.vector(ReturnsOffset[1:237])
+   r444<-as.vector(ReturnsOffset[4:240])
+   final_r<-as.data.frame(cbind(r111,r222,r333,r444))#data for fit
+   colnames(final_r)<-c('r1','r2','r3','r')
+
+
+#pick h that minimizes FMSE
+for (i in 1:length(spanlist)) 
+{
+  
+  if(m==0){
+     #data for predict in window
+    r11<-as.vector(ReturnsOffset[237:239])
+    r22<-as.vector(ReturnsOffset[236:238])
+    r33<-as.vector(ReturnsOffset[235:237])
+    predict_r<-as.data.frame(cbind(r11,r22,r33))
+    colnames(predict_r)<-c('r1','r2','r3')
+    
+    y.loess = tryCatch( loess(r ~ r1+r2+r3, data_r, span=spanlist[i]),
+                       error=function( err ) FALSE,
+                       warning=function( err ) FALSE )
+    
+    if(!is.logical(y.loess)){
+      y.predict <- predict(y.loess, predict_r)
+      pr3[1,i]<-y.predict[1]
+      pr2[1,i]<-y.predict[2]
+      pr1[1,i]<-y.predict[3]
+      #note: y.predict can have NA.
+    }
+    else{
+      pr3[1,i]<-NA
+      pr2[1,i]<-NA
+      pr1[1,i]<-NA
+    }
+    
+  }
+  
+  else if(m>=1){
+    if(is.na(pr2[1,i]) || is.na(pr1[1,i]) || is.na(LsAll[1,i])){
+    r11<-as.vector(ReturnsOffset[237:239])
+    r22<-as.vector(ReturnsOffset[236:238])
+    r33<-as.vector(ReturnsOffset[235:237])
+    predict_r<-as.data.frame(cbind(r11,r22,r33))
+    colnames(predict_r)<-c('r1','r2','r3')
+    
+    y.loess = tryCatch( loess(r ~ r1+r2+r3, data_r, span=spanlist[i]),
+                       error=function( err ) FALSE,
+                       warning=function( err ) FALSE )
+    
+    if(!is.logical(y.loess)){
+      y.predict <- predict(y.loess, predict_r)
+      pr3[1,i]<-y.predict[1]
+      pr2[1,i]<-y.predict[2]
+      pr1[1,i]<-y.predict[3]
+      #note: y.predict can have NA.
+    }
+    else{
+      pr3[1,i]<-NA
+      pr2[1,i]<-NA
+      pr1[1,i]<-NA
+    }
+    
+      
+    }
+    
+    else{
+    pr3[1,i]<-pr2[1,i]
+    pr2[1,i]<-pr1[1,i]
+    pr1[1,i]<-LsAll[1,i]
+    }
+  }
+  
+  predict_FMSE<-c(as.numeric(pr3[1,i]),as.numeric(pr2[1,i]),as.numeric(pr1[1,i]))
+  if(anyNA(predict_FMSE)){
+    FMSE[1,i]<-NA
+    LsAll[1,i]<-NA
+  }
+  else{
+  FMSE[1,i]<-sum((predict_FMSE-ReturnsOffset[238:240])^2)
+  FMSE[1,i]<-sqrt(1/3*FMSE[1,i])
+  
+  final_loess_i <- tryCatch(loess(r ~ r1+r2+r3, final_r, span=spanlist[i]),  error=function( err ) FALSE, warning=function( err ) FALSE)
+  if(is.logical(final_loess_i)){
+    LsAll[1,i]<-NA
+  }
+  else{
+  usepredict<-cbind.data.frame(as.vector(ReturnsOffset[240]),as.vector(ReturnsOffset[239]),as.vector(ReturnsOffset[238]))
+  colnames(usepredict)<-c('r1','r2','r3')
+  LsAll[1,i]<-predict(final_loess_i, usepredict)
+  }
+  }
+} #end loop of spanlist
+   
+  
+final_h<- tryCatch(which(FMSE == min(FMSE,na.rm=TRUE), arr.ind = TRUE)[2], error=function( err ) FALSE,
+                       warning=function( err ) FALSE) #possible to get NA.
+
+if(is.logical(final_h)){
+    ind    <- index(returns1min[d+1,windowLength+m])
+    forecasts[m+1,d+1] <- 1 #forecast signals 
+    model_return[m+1,d+1] = returns1min[d+1,windowLength+m+1] #matrix store return using the model
+    
+    # the data has 1 minute frequency and is traded for 6.5 hours per day.
+    SR  = round(100*sqrt(252*60*6.5)*mean(na.exclude(model_return[1:(m+1),d+1]))/sqrt(max(0.0000001,var(na.exclude(model_return[1:(m+1),d+1])))))/100
+    SRm = round(100*sqrt(252*60*6.5)*mean(na.exclude(returns1min[d+1,(windowLength+1):(windowLength+m+1)]))
+                /sqrt(max(0.0000001,var(t(na.exclude(returns1min[d+1,(windowLength+1):(windowLength+m+1)]))))))/100
+    
+    print(paste(paste('Date: ',ind,sep=''),
+                paste(' SR = ',SR,sep =''),
+                paste(' SRm = ',SRm, sep=''),
+                paste(' Signal = ',1,sep=''),
+                paste(' NN: (',1,',',final_h,')',sep=''),
+                paste(' mins Progress = ',paste(round(10000*m/(foreLength-1))/100,'%',sep=''),sep=''),
+                paste(' days Progress = ',paste(round(10000*d/(nDays))/100,'%',sep=''),sep=''),
+                sep=";")) 
+} 
+
+else{
+    pr     <- as.numeric(LsAll[1,final_h])
+    if(is.na(pr)){
+      ind    <- index(returns1min[d+1,windowLength+m])
+      forecasts[m+1,d+1] <- 1 #forecast signals 
+      model_return[m+1,d+1] = returns1min[d+1,windowLength+m+1] #matrix store return using the model
+    
+    # the data has 1 minute frequency and is traded for 6.5 hours per day.
+      SR  = round(100*sqrt(252*60*6.5)*mean(na.exclude(model_return[1:(m+1),d+1]))/sqrt(max(0.0000001,var(na.exclude(model_return[1:(m+1),d+1])))))/100
+      SRm = round(100*sqrt(252*60*6.5)*mean(na.exclude(returns1min[d+1,(windowLength+1):(windowLength+m+1)]))
+                /sqrt(max(0.0000001,var(t(na.exclude(returns1min[d+1,(windowLength+1):(windowLength+m+1)]))))))/100
+    
+      print(paste(paste('Date: ',ind,sep=''),
+                paste(' SR = ',SR,sep =''),
+                paste(' SRm = ',SRm, sep=''),
+                paste(' Signal = ',1,sep=''),
+                paste(' NN: (',1,',',final_h,')',sep=''),
+                paste(' mins Progress = ',paste(round(10000*m/(foreLength-1))/100,'%',sep=''),sep=''),
+                paste(' days Progress = ',paste(round(10000*d/(nDays))/100,'%',sep=''),sep=''),
+                sep=";")) 
+    }
+    else{
+    ind    <- index(returns1min[d+1,windowLength+m])
+    forecasts[m+1,d+1] <- ifelse(pr < 0, -1, 1) #forecast signals 
+    
+    model_return[m+1,d+1] = (returns1min[d+1,windowLength+m+1])*ifelse(pr < 0, -1, 1) #matrix store return using the model
+    
+    # the data has 1 minute frequency and is traded for 6.5 hours per day.
+    SR  = round(100*sqrt(252*60*6.5)*mean(na.exclude(model_return[1:(m+1),d+1]))/sqrt(max(0.0000001,var(na.exclude(model_return[1:(m+1),d+1])))))/100
+    SRm = round(100*sqrt(252*60*6.5)*mean(na.exclude(returns1min[d+1,(windowLength+1):(windowLength+m+1)]))
+                /sqrt(max(0.0000001,var(t(na.exclude(returns1min[d+1,(windowLength+1):(windowLength+m+1)]))))))/100
+    
+    print(paste(paste('Date: ',ind,sep=''),
+                paste(' SR = ',SR,sep =''),
+                paste(' SRm = ',SRm, sep=''),
+                paste(' Signal = ',ifelse(pr < 0, -1, 1),sep=''),
+                paste(' NN: (',1,',',final_h,')',sep=''),
+                paste(' mins Progress = ',paste(round(10000*m/(foreLength-1))/100,'%',sep=''),sep=''),
+                paste(' days Progress = ',paste(round(10000*d/(nDays))/100,'%',sep=''),sep=''),
+                sep=";")) 
+    }
+}
+
+
+
+
+  }
+}
+forecasts<-t(forecasts) #d rows and m columns
+r<-t(r) #d rous and m columns
+write.csv(forecasts, file="forecasts_LS_HFdata.csv", row.names=FALSE)
+write.csv(model_return, file="r_LS_HFdata.csv", row.names=FALSE) 
+   
+
+```

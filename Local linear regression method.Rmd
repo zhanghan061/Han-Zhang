@@ -1,0 +1,260 @@
+---
+title: "Loess Trading Strategy On The S&P500 Stock Market Index "
+author: "Han Zhang"
+date: "Nov 3, 2016"
+output: html_document
+---
+
+##Source
+
+The trading stragegy is based on the article at <https://www.quantstart.com/articles/ARIMA-GARCH-Trading-Strategy-on-the-SP500-Stock-Market-Index-Using-R>.
+
+The strategy is carried out on a "rolling window" basis:
+
+1. For each day, $n$, the previous $k$ days of the differenced logarithmic returns of a stock market index are used as a window for fitting an optimal local linear regression model with optimal bandwidth.
+
+2. The combined model is used to make a prediction for the next day returns.
+
+3. If the prediction is negative the stock is shorted at the previous close, while if it is positive it is longed.
+
+4. If the prediction is the same direction as the previous day then nothing is changed.
+
+We will use the maximum available data from Yahoo Finance for the S&P500. I have taken $k=500$ but this is a parameter that can be optimised in order to improve performance or reduce drawdown.
+
+The backtest is carried out in a straightforward vectorised fashion. Hence the performance achieved in a real trading system would likely be slightly less than you might achieve here, due to commission and slippage.
+
+##Strategy Implementation
+
+The first task is to install and import the necessary libraries in R:
+
+```{r, eval=TRUE, include=FALSE}
+#install.packages("quantmod")
+#install.packages("lattice")
+#install.packages("timeSeries")
+#install.packages("rugarch")
+#install.packages(streamgraph)
+#install.packages('viridis')
+
+library("xts") #for time series
+library("nloptr") #for optimization
+library(zoo)
+library("dygraphs") #for plots
+library("magrittr") # pipes
+library(dplyr)
+#library(streamgraph)
+#library(viridis)
+
+library(quantmod)
+library(lattice)
+library(timeSeries)
+library(rugarch)
+
+```
+
+## Including Plots
+We are going to apply the strategy to the S&P500. 
+We obtain the data from quantmod. Yahoo Finance uses the symbol "^GPSC".
+
+```{r}
+#getSymbols("^GSPC", from="2004-01-01",to="2016-11-01")
+load("C:/Users/zhang/Desktop/STAT GU4263/GSPC.RData")
+```
+
+We create the differenced logarithmic returns of the "Closing Price" of the S&P500 and strip out the initial NA value:
+
+```{r}
+spReturns = diff(log(Cl(GSPC)))
+spReturns[as.character(head(index(Cl(GSPC)),1))] = 0
+```
+
+We need to create a vector, forecasts to store our forecast values on particular dates. 
+We set the length foreLength to be equal to the length of trading data we have minus $k$, the window length:
+
+```{r}
+windowLength <- 500
+foreLength <- length(spReturns) - windowLength
+forecasts <- matrix(NA,foreLength+1,2)
+```
+
+
+
+```{r, eval=FALSE, include=TRUE}
+if (1==1)
+{
+  for (d in 0£ºforeLength) {
+    spReturnsOffset = spReturns[(1+d):(windowLength+d)]
+r1<-as.vector(spReturnsOffset[3:496])#vector hold values of rt-1
+r2<-as.vector(spReturnsOffset[2:495])
+r3<-as.vector(spReturnsOffset[1:494])
+r<-as.vector(spReturnsOffset[4:497])
+data_r<-as.data.frame(cbind(r1,r2,r3,r))#data for fit
+
+#data for predict
+r11<-as.vector(spReturnsOffset[497:499])
+r22<-as.vector(spReturnsOffset[496:498])
+r33<-as.vector(spReturnsOffset[495:497])
+
+predict_r<-as.data.frame(cbind(r11,r22,r33))
+colnames(predict_r)<-c('r1','r2','r3')
+#3. Fit the loess model
+final.FMSE <- Inf
+final.bandwidth <- 0
+spanlist<-c(seq(from=0.1,to=2,by=0.1))#generate a list of h from 0.1 to 2
+
+#pick h that minimizes FMSE
+for (i in 1:length(spanlist)) 
+{
+  
+  
+  y.loess = tryCatch( loess(r ~ r1+r2+r3, data_r, span=spanlist[i]),
+                       error=function( err ) FALSE,
+                       warning=function( err ) FALSE )
+  #4. if we got the fit return update the FMSE else move to the next model.
+  if( !is.logical( y.loess ) ) {
+    y.predict <- predict(y.loess, predict_r) #get predict value of y
+    #compute FMSE
+    currentFMSE<-sum((y.predict-spReturnsOffset[498:500])^2)
+    currentFMSE<-sqrt(1/3*currentFMSE)
+     #if current FMSE=NA for a rolling window?
+    
+    if ((!is.na(currentFMSE)) & (currentFMSE < final.FMSE)) {
+      final.FMSE <- currentFMSE
+      final.bandwidth <- spanlist[i]
+     
+    }
+  } else {
+    next
+  }
+}
+#dont get any bandwidth since all value of current FMSE is NA,set the direction to long
+if(final.bandwidth==0){
+  forecasts[d+1,1] = index(spReturnsOffset)[windowLength]
+        forecasts[d+1,2] = 1
+        print("warning or error")
+        print(paste(paste('Date: ',index(spReturnsOffset)[windowLength],sep=''), paste(' Signal = ',1,sep=''),paste(' Progress = ',paste(round(10000*d/foreLength)/100,'%',sep=''),sep=''), sep=";")) 
+}
+
+
+
+else{
+r111<-as.vector(spReturnsOffset[3:499])#vector hold values of rt-1
+r222<-as.vector(spReturnsOffset[2:498])
+r333<-as.vector(spReturnsOffset[1:497])
+r444<-as.vector(spReturnsOffset[4:500])
+final_r<-as.data.frame(cbind(r111,r222,r333,r444))#data for fit
+colnames(final_r)<-c('r1','r2','r3','r')
+finaly.loess <- loess(r ~ r1+r2+r3, final_r, span=final.bandwidth)
+
+
+# choose the correct forecast direction based on the returns prediction
+# Output the results to the screen and the forecasts vector
+usepredict<-cbind.data.frame(as.vector(spReturnsOffset[500]),as.vector(spReturnsOffset[499]),as.vector(spReturnsOffset[498]))
+colnames(usepredict)<-c('r1','r2','r3')
+fore<-predict(finaly.loess, usepredict)
+#if forecast is NA,set the direction to be one( missing some value in 498 499 500 of rolling window)
+if(is.na(fore)){
+  forecasts[d+1,1] = index(spReturnsOffset)[windowLength]
+        forecasts[d+1,2] = 1
+        print("warning or error")
+        print(paste(paste('Date: ',index(spReturnsOffset)[windowLength],sep=''), paste(' Signal = ',1,sep=''),paste(' Progress = ',paste(round(10000*d/foreLength)/100,'%',sep=''),sep=''), sep=";")) 
+}
+  #10 compute the one-step-ahead forecast and store the trading decision {-1,1}
+else{
+  forecasts[d+1,1] = index(spReturnsOffset)[windowLength]
+  forecasts[d+1,2] = ifelse(fore < 0, -1, 1)
+  #print the date 
+  print(paste(paste('Date: ',index(spReturnsOffset)[windowLength],sep=''), paste(' Signal = ',ifelse(fore < 0, -1, 1),sep=''),paste(' Progress = ',paste(round(10000*d/foreLength)/100,'%',sep=''),sep=''), sep=";")) 
+}
+}
+  
+      
+}
+
+  
+write.csv(forecasts, file="forecasts_prj2.csv", row.names=FALSE,quote=FALSE)
+
+}
+```
+
+
+# Input the CSV file
+
+```{r}
+forecastcsv <-read.csv(file="C:/Users/zhang/Desktop/STAT GU4263/forecasts_prj2.csv", header=T, sep=",",dec = ".")
+forecastcsv1<-read.csv(file="C:/Users/zhang/Desktop/STAT GU4263/forecasts2.1.csv", header=T, sep=",",dec = ".")
+forecastcsv2 <-read.csv(file="C:/Users/zhang/Desktop/STAT GU4263/forecasts_prj1.1noerror.csv", header=T, sep=",",dec = ".")
+
+spArimaGarch2 <- as.xts(forecastcsv$V2,order.by=as.Date(forecastcsv$V1))
+spArimaGarch2 <- lag(spArimaGarch2)
+
+spArimaGarch1 <- as.xts(forecastcsv1$V2,order.by=as.Date(forecastcsv1$V1))
+spArimaGarch1 <- lag(spArimaGarch1)
+
+spArimaGarch0 <- as.xts(forecastcsv2$V2,order.by=as.Date(forecastcsv2$V1))
+spArimaGarch0 <- lag(spArimaGarch0)
+```
+
+# Create the Loess method,neural network and ARMA-GARCH returns
+
+```{r}
+
+spIntersect         <- merge( spArimaGarch2[,1], spReturns)
+spArimaGarchReturns <- spIntersect[,1] * spIntersect[,2]
+
+spIntersect1         <- merge( spArimaGarch1[,1], spReturns)
+spArimaGarchReturns1 <- spIntersect1[,1] * spIntersect1[,2]
+
+spIntersect2         <- merge( spArimaGarch0[,1], spReturns)
+spArimaGarchReturns2 <- spIntersect2[,1] * spIntersect2[,2]
+
+```
+
+# Create the backtests for ARIMA+GARCH and Loess method and neural network
+
+```{r}
+
+#merge the three time series of returns
+spCombined <-merge(spArimaGarchReturns,spArimaGarchReturns1,all=F)
+spCombined <-merge(spCombined,spArimaGarchReturns2,all=F)
+spCombined<-merge(spCombined,spIntersect[,2],all=F)
+#exclude NA and compute cumulative log-returns 
+spCombinedCurve   <-(1+cumsum(na.exclude(spCombined)))
+
+```
+
+# Plot the four time series of cumulative returns on one figure
+
+```{r}
+colnames(spCombinedCurve)<-c("Loess Method","Arma-Garch","Neural Network","Buy&Hold")
+dygraph(spCombinedCurve) %>%
+  dyRangeSelector()  %>% 
+  dyOptions(axisLineWidth = 1.5, fillGraph = FALSE, drawGrid = FALSE, rightGap=50)
+Loess_returns<-spArimaGarchReturns
+colnames(Loess_returns)<-("S_P_ratio_Loess")
+Sharpe_Ratio_Loess<-sqrt(252)*(mean(Loess_returns,na.rm=T)/sd(Loess_returns,na.rm=T))
+Sharpe_Ratio_Arma_Garch<-sqrt(252)*(mean(spArimaGarchReturns1,na.rm=T)/sd(spArimaGarchReturns1,na.rm=T))
+```
+
+#Report Sharpe Ratio of Loess Method
+```{r}
+Sharpe_Ratio_Loess
+```
+
+#Report Sharpe Ratio of Buy and Hold
+```{r}
+Sharpe_Ratio_BuyandHold<-(mean(spIntersect[501:3232,2],na.rm=T)/sd(spIntersect[501:3232,2],na.rm=T))*sqrt(252)
+Sharpe_Ratio_BuyandHold
+```
+
+#Report Sharpe Ratio of Neural Network
+```{r}
+Sharpe_Ratio_Neural_Network<-sqrt(252)*(mean(spArimaGarchReturns2,na.rm=T)/sd(spArimaGarchReturns2,na.rm=T))
+Sharpe_Ratio_Neural_Network
+```
+
+#Report Sharpe Ratio of ARMA-GARCH
+```{r}
+Sharpe_Ratio_Arma_Garch
+```
+
+#Since the cumulative returns of ARMA-GARCH and Sharpe Ratio of Arma Garch are both higher, ARMA-GARCH is a better strategy. And loess method has the lowest cumulative return and sharpe ratio among the four methods. 
