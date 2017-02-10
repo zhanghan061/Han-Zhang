@@ -1,0 +1,245 @@
+---
+title: "Project.Neural Network Trading Strategy On The S&P500 Stock Market Index "
+author: "Han Zhang" 
+date: "Nov 3, 2016"
+output: html_document
+---
+
+##Source
+
+This R Markdown document is based on the article at <https://www.quantstart.com/articles/ARIMA-GARCH-Trading-Strategy-on-the-SP500-Stock-Market-Index-Using-R>.
+
+The strategy is carried out on a "rolling window" basis:
+
+1. For each day, $n$, the previous $k$ days of the differenced logarithmic returns of a stock market index are used as a window for fitting an optimal Neural Network model.
+
+2. The combined model is used to make a prediction for the next day returns.
+
+3. If the prediction is negative the stock is shorted at the previous close, while if it is positive it is longed.
+
+4. If the prediction is the same direction as the previous day then nothing is changed.
+
+We will use the maximum available data from Yahoo Finance for the S&P500. I have taken $k=500$ but this is a parameter that can be optimised in order to improve performance or reduce drawdown.
+
+The backtest is carried out in a straightforward vectorised fashion. Hence the performance achieved in a real trading system would likely be slightly less than you might achieve here, due to commission and slippage.
+
+##Strategy Implementation
+
+The first task is to install and import the necessary libraries in R:
+
+```{r, eval=TRUE, include=FALSE}
+install.packages("quantmod")
+install.packages("lattice")
+install.packages("timeSeries")
+install.packages("rugarch")
+install.packages(streamgraph)
+install.packages('viridis')
+install.packages('neuralnet')
+
+library("xts") #for time series
+library("nloptr") #for optimization
+library(zoo)
+library("dygraphs") #for plots
+library("magrittr") # pipes
+library(dplyr)
+library(streamgraph)
+library(viridis)
+
+library(quantmod)
+library(lattice)
+library(timeSeries)
+library(rugarch)
+library(neuralnet)
+```
+
+## Including Plots
+We are going to apply the strategy to the S&P500. 
+We obtain the data from quantmod. Yahoo Finance uses the symbol "^GPSC".
+
+```{r}
+getSymbols("^GSPC", from="2004-01-01",to="2016-11-01")
+#load("C:/Users/zhang/Desktop/STAT GU4263/hw4/GSPC.RData")
+```
+
+We create the differenced logarithmic returns of the "Closing Price" of the S&P500 and strip out the initial NA value:
+
+```{r}
+spReturns = diff(log(Cl(GSPC)))
+spReturns[as.character(head(index(Cl(GSPC)),1))] = 0
+```
+
+We need to create a vector, forecasts to store our forecast values on particular dates. 
+We set the length foreLength to be equal to the length of trading data we have minus $k$, the window length:
+
+```{r}
+windowLength <- 500
+foreLength <- length(spReturns) - windowLength
+forecasts <- matrix(NA,foreLength+1,2)
+```
+
+
+```{r}
+P=5
+Q=5
+nnAll=matrix(list(),P,Q+1)
+
+
+
+nnAR3 <- function(data1,p,q,weights)
+{
+  T1 <- dim(data1)[1]
+  maxs <- apply(data1, 2, max) 
+  mins <- apply(data1, 2, min)
+  scaled <- as.data.frame(scale(data1, center = mins, scale = maxs - mins))
+  
+  Y <- scaled[4:T1,1]
+  X <- c(scaled[3:(T1-1),1],scaled[2:(T1-2),1],scaled[1:(T1-3),1])
+  X <- matrix(X,length(X)/3,3)
+  
+  f  <- as.formula("Y ~ X[,1] + X[,2] + X[,3]")
+  if (q>0){
+    nn1 <- neuralnet(f,data=scaled,hidden=c(p,q),linear.output=T,startweights=weights)  
+  }else #q=0 corresponds to a NN with one hidden layer and p neurons
+  {
+    nn1 <- neuralnet(f,data=scaled,hidden=p,linear.output=T,startweights=weights)  
+  }
+  pr.nn   <- compute(nn1,t(c(scaled[T1,1],scaled[(T1-1),1],scaled[(T1-2),1])))
+  pr.nn_  <- pr.nn$net.result*( maxs - mins ) + mins
+  nn1$pr  <- pr.nn
+  nn1$pr_ <- pr.nn_
+  
+  return(nn1)
+}
+
+
+
+
+if (1==1)
+{
+  for (d in 0:foreLength) {
+    spReturnsOffsetnn = spReturns[(1+d):(windowLength+d)]
+    T    <- dim(spReturnsOffsetnn)[1]
+    FMSE <- matrix(NA,P,Q+1)
+    for (p in 1:P) for (q in 0:Q) {
+    
+    pr1  <- tryCatch(nnAR3(spReturnsOffsetnn[1:(T-1),1],p,q,nnAll[[p,q+1]]$weights)$pr_, error = function (e) e, warning = function(w) w)
+    
+    if(is(pr1,"warning") || is(pr1, "error")) {pr1<- nnAR3(spReturnsOffsetnn[1:(T-1),1], p, q, NULL)$pr_}
+    
+    pr2  <- tryCatch(nnAR3(spReturnsOffsetnn[1:(T-2),1],p,q,nnAll[[p,q+1]]$weights)$pr_, error = function(e) e, warning = function(w) w)
+    
+    if(is(pr2,"warning") || is(pr2, "error")) {pr2<- nnAR3(spReturnsOffsetnn[1:(T-2),1], p, q, NULL)$pr_}
+    
+    pr3  <- tryCatch(nnAR3(spReturnsOffsetnn[1:(T-3),1],p,q,nnAll[[p,q+1]]$weights)$pr_,error = function(e) e, warning = function(w) w)
+    
+    if(is(pr3,"warning") || is(pr3, "error")) {pr3<- nnAR3(spReturnsOffsetnn[1:(T-3),1], p, q, NULL)$pr_}
+    
+    FMSE[p,q+1] <- (as.numeric(spReturnsOffsetnn[T,1]) - pr1)^2 +
+                     (as.numeric(spReturnsOffsetnn[(T-1),1]) - pr2)^2 +
+                     (as.numeric(spReturnsOffsetnn[(T-2),1]) - pr3)^2
+    
+    nn  <- tryCatch(nnAR3(spReturnsOffsetnn[1:T,1],p,q,nnAll[[p,q+1]]$weights))
+    if(is(nn,"warning") || is(nn, "error")) {nn<- nnAR3(spReturnsOffsetnn[1:T,1], p, q, NULL)}
+    nnAll[[p,q+1]]=nn
+    }
+    p1 <- which(FMSE == min(FMSE), arr.ind = TRUE)[1]
+    q1 <- which(FMSE == min(FMSE), arr.ind = TRUE)[2]
+    
+    nnOpt  <- nnAll[[p1,q1]]
+    pr  <- nnOpt$pr_
+    
+    
+    
+    forecasts[d+1,1] = index(spReturnsOffset)[windowLength]
+    forecasts[d+1,2] = ifelse(pr < 0, -1, 1)
+    
+  
+  
+   print(paste(paste('Date: ',index(spReturnsOffset)[windowLength],sep=''), paste(' Signal = ',ifelse(pr < 0, -1, 1),sep=''),paste(' Progress = ',paste(round(10000*d/foreLength)/100,'%',sep=''),sep=''), sep=";")) 
+
+  }
+write.csv(forecasts, file="forecastsnn.csv", row.names=FALSE, quote=FALSE) 
+}
+```
+
+```{r}
+forecastcsvnn <-read.csv(file="/users/zhangyuanyuan/desktop/R code/4/forecastsnn.csv", header=T, sep=",",dec = ".")
+
+spnn2 <- as.xts(forecastcsvnn$V2,order.by=as.Date(forecastcsvnn$V1))
+spnn2 <- lag(spnn2)
+```
+
+```{r}
+spIntersectnn  <- merge( spnn2[,1], spReturns)
+spnnReturns <- spIntersectnn[,1] * spIntersectnn[,2]
+```
+
+
+# Input the CSV file
+
+```{r}
+forecastcsv <-read.csv(file="C:/Users/zhang/Desktop/STAT GU4263/hw4/forecasts_prj1true.csv", header=T, sep=",",dec = ".")
+forecastcsv1<-read.csv(file="C:/Users/zhang/Desktop/STAT GU4263/hw4/forecasts2.1.csv", header=T, sep=",",dec = ".")
+
+
+spArimaGarch2 <- as.xts(forecastcsv$V2,order.by=as.Date(forecastcsv$V1))
+spArimaGarch2 <- lag(spArimaGarch2)
+
+spArimaGarch1 <- as.xts(forecastcsv1$V2,order.by=as.Date(forecastcsv1$V1))
+spArimaGarch1 <- lag(spArimaGarch1)
+
+```
+
+# Create the ARIMA+GARCH and neural network returns
+
+```{r}
+
+spIntersect         <- merge( spArimaGarch2[,1], spReturns)
+spArimaGarchReturns <- spIntersect[,1] * spIntersect[,2]
+
+spIntersect1         <- merge( spArimaGarch1[,1], spReturns)
+spArimaGarchReturns1 <- spIntersect1[,1] * spIntersect1[,2]
+```
+
+# Create the backtests for ARIMA+GARCH and neural network returns
+
+```{r}
+
+#merge the two time series of returns
+spCombined <-merge(spArimaGarchReturns,spArimaGarchReturns1,all=F)
+spCombined<-merge(spCombined,spIntersect[,2],all=F)
+#exclude NA and compute cumulative log-returns 
+spCombinedCurve   <-(1+cumsum(na.exclude(spCombined)))
+
+```
+
+# Plot the three time series of cumulative returns on one figure
+
+```{r}
+colnames(spCombinedCurve)<-c("neural network","Arma-Garch","Buy&Hold")
+dygraph(spCombinedCurve) %>%
+  dyRangeSelector()  %>% 
+  dyOptions(axisLineWidth = 1.5, fillGraph = FALSE, drawGrid = FALSE, rightGap=50)
+Loess_returns<-spArimaGarchReturns
+colnames(Loess_returns)<-("S_P_ratio_Loess")
+Sharpe_Ratio_Neural_Network<-sqrt(252)*(mean(Loess_returns,na.rm=T)/sd(Loess_returns,na.rm=T))
+Sharpe_Ratio_Arma_Garch<-sqrt(252)*(mean(spArimaGarchReturns1,na.rm=T)/sd(spArimaGarchReturns1,na.rm=T))
+```
+
+#Report Sharpe Ratio of Buy and Hold
+```{r}
+Sharpe_Ratio_BuyandHold<-(mean(spIntersect[501:3232,2],na.rm=T)/sd(spIntersect[501:3232,2],na.rm=T))*sqrt(252)
+Sharpe_Ratio_BuyandHold
+```
+
+#Report Sharpe Ratio of Neural Network
+```{r}
+Sharpe_Ratio_Neural_Network
+```
+
+#Report Sharpe Ratio of ARMA-GARCH
+```{r}
+Sharpe_Ratio_Arma_Garch
+```
+
+#Since the cumulative returns of ARMA-GARCH and Sharpe Ratio of Arma Garch are both higher, ARMA-GARCH is a better strategy.
